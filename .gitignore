@@ -1,3 +1,4 @@
 .env
 fitsdb.zip
 .vscode
+__pycache__/

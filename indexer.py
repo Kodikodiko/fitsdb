@@ -6,6 +6,7 @@ from datetime import datetime
 import socket
 import platform
 import uuid
+import time
 
 from astropy.io import fits
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
@@ -177,9 +178,29 @@ def run_indexer(root_directory: str):
     print(f"Phase 1 Complete: Found {total_found} potential FITS files.")
     print(f"Phase 2: Processing and indexing files...\n")
 
+    start_time = time.time()
+
     for i, file_path in enumerate(files_to_process):
-        print(f"--- Processing file {i+1}/{total_found} ---")
+        files_processed = i + 1
+        print(f"--- Processing file {files_processed}/{total_found} ---")
         process_fits_file(db, file_path, client_info)
+
+        # Alle 100 Dateien eine Schätzung ausgeben
+        if files_processed % 100 == 0 and i > 0:
+            elapsed_time = time.time() - start_time
+            avg_time_per_file = elapsed_time / files_processed
+            files_remaining = total_found - files_processed
+            eta_seconds = files_remaining * avg_time_per_file
+            
+            # Umwandlung in Stunden, Minuten, Sekunden
+            eta_h = int(eta_seconds // 3600)
+            eta_m = int((eta_seconds % 3600) // 60)
+            eta_s = int(eta_seconds % 60)
+
+            print("\n" + "="*50)
+            print(f"PROGRESS: {files_processed} / {total_found} files indexed.")
+            print(f"ESTIMATED TIME REMAINING: {eta_h}h {eta_m}m {eta_s}s")
+            print("="*50 + "\n")
     
     db.close()
     print("\nIndexing complete.")
