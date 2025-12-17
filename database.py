@@ -41,6 +41,7 @@ class FitsFile(Base):
     header_dump = Column(JSONB)
 
     # Client information
+    scan_root = Column(String)
     client_hostname = Column(String)
     client_os = Column(String)
     client_mac = Column(String, index=True)

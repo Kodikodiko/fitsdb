@@ -53,30 +53,49 @@ default_min_date, default_max_date = get_date_range(id(db))
 
 # --- State Management ---
 
+@st.cache_data
+def get_filter_options(_db_session_id, selected_clients_macs):
+    """Queries the DB for distinct, sorted lists of filter options."""
+    db = get_db_session()
+    query = db.query(FitsFile)
+    if selected_clients_macs:
+        query = query.filter(FitsFile.client_mac.in_(selected_clients_macs))
+
+    # Query for distinct, non-null, non-empty values and sort them
+    object_names = sorted([r[0] for r in query.with_entities(FitsFile.object_name).distinct().all() if r[0] and r[0] != 'Unknown'])
+    observatories = sorted([r[0] for r in query.with_entities(FitsFile.observatory).distinct().all() if r[0] and r[0] != 'Unknown'])
+    exptimes = sorted([r[0] for r in query.with_entities(FitsFile.exptime).distinct().all() if r[0] is not None])
+    
+    return object_names, observatories, exptimes
+
+# --- State Management ---
+
 def initialize_state():
     """Initializes session state for filters if they don't exist."""
-    if 'object_name' not in st.session_state: st.session_state.object_name = ""
+    # Multi-select filters
+    if 'object_names' not in st.session_state: st.session_state.object_names = []
+    if 'observatories' not in st.session_state: st.session_state.observatories = []
+    if 'exptimes' not in st.session_state: st.session_state.exptimes = []
+    
+    # Other filters from original app
     if 'date_range' not in st.session_state: st.session_state.date_range = (default_min_date, default_max_date)
-    if 'min_exptime' not in st.session_state: st.session_state.min_exptime = 0.0
     if 'min_altitude' not in st.session_state: st.session_state.min_altitude = 0
     if 'max_altitude' not in st.session_state: st.session_state.max_altitude = 90
     if 'selected_file' not in st.session_state: st.session_state.selected_file = None
     if 'selected_clients' not in st.session_state:
         st.session_state.selected_clients = [current_client['mac']] if current_client['mac'] in all_clients_map else []
-    # DO NOT initialize widget state like this: 'results_df'
 
 def clear_all_filters():
     """Resets all filters to their default values."""
-    st.session_state.object_name = ""
+    st.session_state.object_names = []
+    st.session_state.observatories = []
+    st.session_state.exptimes = []
     st.session_state.date_range = (default_min_date, default_max_date)
-    st.session_state.min_exptime = 0.0
     st.session_state.min_altitude = 0
     st.session_state.max_altitude = 90
     st.session_state.selected_file = None
     st.session_state.selected_clients = [current_client['mac']] if current_client['mac'] in all_clients_map else []
-    # To clear a dataframe's selection, we need to re-render it with an empty selection list,
-    # which will happen automatically on the next run after filters change.
-    # We cannot assign to st.session_state.results_df directly.
+    # Dataframe selections are cleared automatically on rerun
 
 initialize_state()
 
@@ -90,11 +109,18 @@ with st.sidebar:
     st.multiselect(
         "Clients", options=list(all_clients_map.keys()), key='selected_clients',
         format_func=lambda mac: f"{all_clients_map.get(mac, 'Unknown')} ({mac[-5:]})",
-        help="Select one or more clients. Defaults to the current machine."
+        help="Select one or more clients. The filters below will update based on your selection."
     )
-    st.text_input("Object Name (case-insensitive)", key='object_name')
+
+    # Get filter options based on selected clients
+    object_opts, obs_opts, exptime_opts = get_filter_options(id(db), st.session_state.selected_clients)
+
+    st.multiselect("Object Names", options=object_opts, key='object_names')
+    st.multiselect("Observatories", options=obs_opts, key='observatories')
+    st.multiselect("Exposure Times (s)", options=exptime_opts, key='exptimes', help="Select specific exposure times.")
+
     st.date_input("Observation Date Range", key='date_range', min_value=default_min_date, max_value=default_max_date)
-    st.number_input("Minimum Exposure Time (seconds)", key='min_exptime', min_value=0.0, step=1.0)
+    
     st.subheader("Altitude Filter")
     st.number_input("Minimum Altitude", key='min_altitude', min_value=0, max_value=90)
     st.number_input("Maximum Altitude", key='max_altitude', min_value=0, max_value=90)
@@ -102,13 +128,18 @@ with st.sidebar:
 
 # --- Main Content ---
 
+# Base query
 query = db.query(FitsFile)
+
+# Apply filters from sidebar
 if st.session_state.selected_clients:
     query = query.filter(FitsFile.client_mac.in_(st.session_state.selected_clients))
-if st.session_state.object_name:
-    query = query.filter(FitsFile.object_name.ilike(f"%{st.session_state.object_name}%"))
-if st.session_state.min_exptime > 0:
-    query = query.filter(FitsFile.exptime >= st.session_state.min_exptime)
+if st.session_state.object_names:
+    query = query.filter(FitsFile.object_name.in_(st.session_state.object_names))
+if st.session_state.observatories:
+    query = query.filter(FitsFile.observatory.in_(st.session_state.observatories))
+if st.session_state.exptimes:
+    query = query.filter(FitsFile.exptime.in_(st.session_state.exptimes))
 if st.session_state.min_altitude > 0 or st.session_state.max_altitude < 90:
     query = query.filter(FitsFile.altitude.between(st.session_state.min_altitude, st.session_state.max_altitude))
 if len(st.session_state.date_range) == 2:
@@ -120,6 +151,16 @@ if len(st.session_state.date_range) == 2:
 try:
     df = pd.read_sql(query.statement, query.session.bind)
     st.info(f"Found **{len(df)}** matching files from **{len(st.session_state.selected_clients)}** selected client(s).")
+
+    # --- Statistics Section ---
+    if not df.empty:
+        with st.expander("Show Statistics for Search Results"):
+            distinct_objects_df = df['object_name'].value_counts().reset_index()
+            distinct_objects_df.columns = ['Object Name', 'File Count']
+            
+            st.metric("Total Distinct Objects in Results", len(distinct_objects_df))
+            st.write("Objects found in current search:")
+            st.dataframe(distinct_objects_df, use_container_width=True, hide_index=True)
 
     if not df.empty:
         st.header("Search Results")
@@ -137,12 +178,10 @@ try:
         )
 
         # --- File Opener Section ---
-        selection = None
-        if "results_df" in st.session_state:
-            selection = st.session_state.results_df.selection
-
-        if selection and selection["rows"]:
+        selection = st.session_state.get("results_df", {}).get("selection", {})
+        if selection and selection.get("rows"):
             selected_row_index = selection["rows"][0]
+            # Use .iloc on the original dataframe `df` to get the real data
             filepath_to_open = df.iloc[selected_row_index]['filepath']
             filename_to_open = df.iloc[selected_row_index]['filename']
             
@@ -159,7 +198,7 @@ try:
                             os.startfile(filepath_to_open)
                             st.success(f"Sent command to open '{filename_to_open}'.")
                         except FileNotFoundError:
-                            st.error(f"File not found at path: {filepath_to_open}")
+                            st.error(f"File not found at path: {filepath_to_open}. Is the drive mounted correctly?")
                         except Exception as e:
                             st.error(f"Failed to open file: {e}")
                     else:
@@ -169,6 +208,7 @@ try:
         # --- Header Inspector ---
         st.header("FITS Header Inspector")
         file_options = df['filepath'].tolist()
+        # Ensure the selected file is valid, otherwise reset it
         if st.session_state.selected_file not in file_options:
             st.session_state.selected_file = None
 
@@ -177,6 +217,7 @@ try:
             options=file_options,
             key='selected_file',
             format_func=lambda x: Path(x).name if x else "...",
+            index=None # Set default to empty
         )
         
         if st.session_state.selected_file:
@@ -185,13 +226,10 @@ try:
         else:
             st.write("Select a file from the list above to see its header.")
             
-    # This else block runs if df is empty
     else:
-        # If the dataframe is empty, there can be no selection.
-        # We don't need to do anything here regarding 'results_df' state.
         st.session_state.selected_file = None
-
 
 except Exception as e:
     st.error(f"An error occurred: {e}")
     st.exception(e)
+

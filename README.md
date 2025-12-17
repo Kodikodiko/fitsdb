@@ -1,50 +1,104 @@
-# FITS File Catalog and Search Application
+# FITSDB
 
-This application provides a system to index FITS files from a local directory into a PostgreSQL database and a web-based GUI to search the catalog.
+A high-speed, searchable catalog for your astronomical FITS files with a modern web interface.
 
-## Setup and Usage
+## About The Project
 
-Follow these steps to set up and run the application.
+FITSDB is a Python-based system designed to solve the problem of managing thousands of FITS files spread across local or network drives. It consists of two main components:
 
-### 1. Install Dependencies
+1.  A **high-speed, parallel indexer** that recursively scans directories, extracts metadata from FITS headers, and populates a central PostgreSQL database.
+2.  An **interactive web application** built with Streamlit that allows for powerful filtering, searching, and inspection of the cataloged files.
 
-First, ensure you have Python 3.10+ installed. Then, install the required Python packages using the `requirements.txt` file.
+## Features
+
+-   **High-Speed Concurrent Indexing**: Utilizes multiple worker threads to scan and process thousands of files in minutes, not hours.
+-   **Interactive Web UI**: A clean and modern interface for searching and exploring your data.
+-   **Advanced Filtering**: Filter your files by:
+    -   Client machine (where the files were indexed)
+    -   Object Name (multi-select)
+    -   Observatory (multi-select)
+    -   Exposure Time (multi-select)
+    -   Date Range
+    -   Altitude Range
+-   **Result Statistics**: Get a quick overview of the objects found in your search results with an expandable statistics panel.
+-   **Header Inspector**: View the full FITS header of any file directly in the web UI.
+-   **File Opener**: On Windows, open a FITS file in its default application directly from the search results.
+
+---
+
+## Setup & Installation
+
+Follow these steps to get the application running.
+
+### 1. Configure Environment
+
+The application uses a `.env` file to manage database credentials. Create a file named `.env` in the root of the project directory.
+
+Copy the following template into your `.env` file and replace the values with your PostgreSQL connection details.
+
+```env
+# .env file
+DB_USER=your_postgres_user
+DB_PASSWORD=your_postgres_password
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=fitsdb
+```
+
+### 2. Install Dependencies
+
+This command will install all necessary Python libraries, including the new `tqdm` for the progress bar.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Create Database Tables
+### 3. Initialize the Database
 
-The `database.py` script can be run directly to create the necessary `fits_files` table in your PostgreSQL database. Make sure your database is running and accessible with the credentials specified in `database.py`.
+This crucial step creates the required tables in your database. If you are upgrading, this will reset the database, deleting old data to apply the new schema.
 
-```bash
-python database.py
-```
-This command will connect to the database and create the table schema if it doesn't already exist.
-
-### 3. Index Your FITS Files
-
-Run the `indexer.py` script, providing the path to the root directory containing your FITS (`.fits`, `.fit`) files. The script will recursively scan the directory, extract metadata, and populate the database.
-
-Replace `/path/to/your/fits/files` with the actual path to your data. For example, if your files are in the current directory `T_CrB`, you would run:
+**WARNING:** This command deletes any existing `fits_files` table and its data.
 
 ```bash
-python indexer.py ./T_CrB
+python database.py --reset
 ```
-or
+
+---
+
+## How to Use
+
+### 1. Index Your FITS Files
+
+Run the indexer script, pointing it to the directory containing your FITS files. Use the optional `--workers` flag to specify how many parallel threads to use.
+
+The optimal number of workers depends on your system's hardware, particularly the speed of your storage (I/O) and the number of CPU cores.
+- For **fast local storage (SSDs)**, a higher number of workers can be effective.
+- For **slower network drives**, the process is often limited by network speed (I/O bound), so a very high number of workers may not increase performance.
+
+A good starting point is a value between **8 and 16**. You can experiment to find the best value for your specific setup.
+
+**Example for a network drive `Z:`:**
 ```bash
-python indexer.py "<<Path to your fits files>>\T_CrB"
+python indexer.py "Z:\__RAW_IMAGES" --workers 16
 ```
 
-The indexer will print its progress and any warnings or errors encountered.
+#### Understanding the Progress Bar
 
-### 4. Run the Search Application
+The script will display a real-time progress bar that looks like this:
+`1068/23562 [01:47<40:31,  9.25file/s]`
 
-Once your files are indexed, you can launch the Streamlit web application.
+-   `1068/23562`: Shows the number of files processed so far out of the total number of files found.
+-   `[01:47<40:31]`: Indicates the elapsed time (`01:47`) and the estimated time remaining (`40:31`) at the current processing speed.
+-   `9.25file/s`: The current indexing speed in files per second.
+
+The `W` at the end of the line on Windows indicates that the console is in a legacy mode and may not support all modern characters, but it does not affect the process.
+
+### 2. Run the Web Application
+
+Once indexing is complete, launch the Streamlit web app.
 
 ```bash
 streamlit run app.py
 ```
 
-This command will start a local web server and open the search interface in your default web browser. You can then use the filters in the sidebar to search your cataloged files.
+This will start a local web server and open the application in your browser, ready for you to explore your newly indexed data.

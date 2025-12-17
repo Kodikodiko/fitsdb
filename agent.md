@@ -1,113 +1,135 @@
-# Project: FITS File Catalog and Search Application
+# Agent Technical Briefing: FITSDB Project
 
 ## 1. Project Goal
 
-The primary objective is to create a comprehensive system for cataloging astronomical FITS files from a local filesystem into a central PostgreSQL database. The system must also provide an interactive web-based graphical user interface (GUI) for searching, filtering, and inspecting the cataloged files.
+The primary objective is to create a high-performance system for cataloging astronomical FITS files into a PostgreSQL database and providing an interactive web GUI for searching, filtering, and inspecting the catalog. This document outlines the technical architecture and operational workflow.
 
 ## 2. Core Architecture & Technology Stack
 
 -   **Backend Language:** Python 3.10+
 -   **Database:** PostgreSQL
--   **ORM:** SQLAlchemy
--   **Astronomical Data Processing:** Astropy
 -   **Web GUI Framework:** Streamlit
--   **Data Manipulation:** Pandas
--   **Database Driver:** `psycopg2-binary`
--   **Client Identification:** `netifaces`, `socket`, `platform`
+-   **ORM:** SQLAlchemy
+-   **Data Processing:** Pandas
+-   **Astronomical Data:** Astropy
+-   **Concurrency:** `concurrent.futures.ThreadPoolExecutor`
+-   **Progress Indication:** `tqdm`
+-   **DB Driver:** `psycopg2-binary`
+-   **Configuration:** `python-dotenv`
 
-## 3. Database Setup
+## 3. Component Overview
 
-### 3.1. Connection Details
+-   `database.py`: Defines the database schema using SQLAlchemy ORM and provides a script for table creation and reset.
+-   `indexer.py`: A high-performance, concurrent command-line script for populating the database.
+-   `app.py`: A Streamlit application that serves the interactive web GUI.
+-   `requirements.txt`: Lists all Python dependencies.
+-   `.env`: A file (to be created by the user) for storing database credentials.
 
-The application must connect to a pre-existing PostgreSQL database with the following credentials:
+## 4. Database Schema (`database.py`)
 
--   **see .env file!**
+### 4.1. Connection
 
-### 3.2. Data Model (`database.py`)
+Connection details are loaded from a `.env` file in the project root. The file must contain `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, and `DB_NAME`.
 
-A single table named `fits_files` is required to store the metadata. The table schema should be defined using SQLAlchemy ORM.
+### 4.2. `fits_files` Table Model
 
-**Table: `fits_files`**
+The schema is defined in the `FitsFile` class.
 
 | Column Name | Data Type | Constraints / Description |
 | :--- | :--- | :--- |
-| `id` | Integer | Primary Key, Auto-incrementing |
-| `filepath` | String | Unique. The absolute path to the FITS file on the client machine. |
-| `filename` | String | The name of the FITS file. |
-| `object_name` | String | Indexed for fast text searching. The astronomical object name from the header. |
-| `date_obs` | DateTime | The observation date and time from the header. |
+| `id` | Integer | Primary Key |
+| `filepath` | String | Unique. The absolute, resolved path to the FITS file. |
+| `filename` | String | The base name of the FITS file. |
+| `object_name` | String | Indexed. The astronomical object name from the header. |
+| `date_obs` | DateTime | The observation date and time. |
 | `exptime` | Float | The exposure time in seconds. |
-| `altitude` | Float | The calculated altitude (elevation) of the object at the time of observation. |
-| `observatory` | String | The name of the observatory from the header. |
-| `header_dump` | JSONB | A complete dump of the FITS header in JSON format. |
-| `client_hostname` | String | The hostname of the client machine that indexed the file. |
-| `client_ip` | String | The IP address of the client machine. |
-| `client_os` | String | The operating system of the client machine (e.g., "Windows"). |
-| `client_mac` | String | The MAC address of the client's primary network interface for unique identification. |
+| `altitude` | Float | The calculated altitude of the object at observation time. |
+| `observatory` | String | The name of the observatory. |
+| `header_dump`| JSONB | A complete JSON dump of the FITS header. |
+| `scan_root` | String | The original root directory path passed to the indexer. |
+| `client_hostname`| String | The hostname of the client machine that indexed the file. |
+| `client_os` | String | The operating system of the client machine. |
+| `client_mac` | String | Indexed. The MAC address of the client machine for unique identification. |
 
-**Indexes:**
-- A case-insensitive index should be created on the `object_name` column to improve search performance.
+## 5. Indexer Script (`indexer.py`)
 
-## 4. Indexer Script (`indexer.py`)
+The indexer is designed for high-speed, parallel processing.
 
-This is a command-line script responsible for populating the database.
+-   **Architecture:**
+    -   The `run_indexer` function first performs a fast file discovery using `os.walk`.
+    -   It then creates a `concurrent.futures.ThreadPoolExecutor` to manage a pool of worker threads.
+    -   Tasks (`process_fits_file`) are submitted to the executor for each file.
+    -   `tqdm` is used to create a progress bar that updates as tasks are completed, providing an accurate ETA.
+-   **Thread Safety:**
+    -   The `process_fits_file` function is thread-safe. It creates and closes its own SQLAlchemy `SessionLocal()` for each file it processes, preventing session conflicts between threads.
+-   **Command-Line Arguments:**
+    -   `directory`: (Positional) The root directory path to scan.
+    -   `--workers` or `-w`: (Optional) The number of concurrent worker threads to use. Defaults to 8. The optimal value is highly dependent on the I/O bottleneck of the target `directory`. For slow network drives, the process is I/O bound, and a smaller number of workers (e.g., 4-8) may be optimal. For fast local SSDs, the process can become CPU-bound, and a higher number (e.g., 16-32) can be beneficial. Advise the user to experiment.
+-   **Progress Bar Interpretation (`tqdm`):**
+    -   The output `1068/23562 [01:47<40:31,  9.25file/s]` should be parsed as:
+        -   `1068/23562`: `processed_items/total_items`.
+        -   `[01:47<40:31]`: `[elapsed_time < remaining_time]`.
+        -   `9.25file/s`: The current processing rate in items per second.
+    -   A `W` suffix on Windows indicates a legacy console and can be ignored.
 
--   **Functionality:**
-    -   It must accept a single command-line argument: the root directory to scan for FITS files.
-    -   It must recursively traverse all subdirectories of the given root path.
-    -   It must identify files with `.fits` or `.fit` extensions.
-    -   For each file found, it performs the following:
-        1.  **Read Header:** Use `astropy.io.fits` to open the file and read its primary header.
-        2.  **Extract Metadata:** Parse key-value pairs like `OBJECT`, `DATE-OBS`, `EXPTIME`, and `OBSERVAT`.
-        3.  **Calculate Altitude:**
-            -   Use the observation time and object coordinates.
-            -   Get the observatory's location (latitude/longitude) from the FITS header if available.
-            -   If not available, use a default location.
-            -   Use `astropy.coordinates` to perform the calculation to get the object's altitude.
-        4.  **Gather Client Info:** Programmatically determine the `hostname`, `ip`, `os`, and `mac address` of the machine running the script.
-        5.  **Database Operation:**
-            -   Check if a record with the same `filepath` already exists.
-            -   If it exists, update the existing record.
-            -   If it does not exist, insert a new record.
-            -   All database operations for a single file should be within a transaction to ensure atomicity.
-    -   **Error Handling:**
-        -   The script must gracefully handle errors, such as corrupt FITS files or database connection issues, log the error, and continue processing other files.
-        -   It must correctly handle data type mismatches between Python (e.g., NumPy types like `np.float64`) and the database.
-    -   **User Feedback:** The script should print progress to the console (e.g., "Processing file X/Y...").
+## 6. Web Search GUI (`app.py`)
 
-## 5. Web Search GUI (`app.py`)
+The Streamlit GUI provides a dynamic interface for data exploration.
 
-This script launches a web application using Streamlit for user interaction.
+-   **Filtering:**
+    -   The sidebar contains filters for clients, date range, and altitude.
+    -   **Dynamic Multi-Select Filters:** For `Object Names`, `Observatories`, and `Exposure Times`. These are populated by querying the distinct values present in the database, scoped to the currently selected client(s). This provides a "one-click" filtering experience.
+-   **Statistics:**
+    -   An expandable section below the main result count displays statistics for the current search results, including a count of distinct objects and a table of their names and file counts.
 
--   **Layout:** A two-column layout with a sidebar for controls and a main area for results.
+---
 
--   **Sidebar Controls:**
-    -   **Client Filter:** A dropdown menu to filter results by the client that indexed them. It should list all unique clients from the database and an "All Clients" option. The default selection should be the current client running the app.
-    -   **Object Name Filter:** A text input field for case-insensitive searching on the `object_name`.
-    -   **Altitude Filter:** Two numeric input fields for `Min Altitude` and `Max Altitude`, allowing users to specify a range from 0 to 90 degrees.
-    -   **Exposure Time Filter:** A numeric input for `Min Exposure Time` in seconds.
-    -   **Date Filter:** A date range selector, allowing the user to pick a start and end date. The date format must be `dd.mm.yyyy`.
-    -   **Clear All Filters Button:** A button that resets all filter controls to their default state and re-runs the query.
+## 7. Operational Workflow (Sequence of Commands)
 
--   **Main Area Display:**
-    -   **Results Table:**
-        -   The primary view is a table (DataFrame) displaying the filtered results from the database.
-        -   Key columns like `filename`, `object_name`, `date_obs`, `exptime`, `altitude`, and `filepath` should be visible.
-    -   **File Interaction:** When a user clicks a row in the results table, the application should attempt to open the `filepath` from that row using the operating system's default associated program for `.fits` files (e.g., `os.startfile` on Windows).
-    -   **FITS Header Inspector:**
-        -   A dropdown or select box should appear above or below the results table, populated with the `filename` of each result.
-        -   When a file is selected from this dropdown, its full FITS header (from the `header_dump` JSONB column) should be displayed in a formatted, readable way (e.g., using `st.json`).
+To set up and run the project from a fresh state, execute the following commands in sequence in the project's root directory.
 
--   **Behavior:**
-    -   The results table should update automatically whenever a filter value is changed.
-    -   The application must handle database connection errors gracefully and display an informative message to the user.
+### Step 1: Configure Environment
 
-## 6. Project Files
+Create a `.env` file in the project root with the PostgreSQL database credentials.
 
-The final project should consist of the following files:
+**Template for `.env`:**
+```env
+DB_USER=your_user
+DB_PASSWORD=your_password
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=fitsdb
+```
 
--   `requirements.txt`: A file listing all Python dependencies (e.g., `sqlalchemy`, `astropy`, `streamlit`, `pandas`, `psycopg2-binary`, `netifaces`).
--   `database.py`: Contains the SQLAlchemy database engine setup and the `FitsFile` ORM model definition.
--   `indexer.py`: The command-line script for scanning and indexing files.
--   `app.py`: The Streamlit application for the search GUI.
--   `agent.md`: This file, documenting all project requirements.
+### Step 2: Install Dependencies
+
+Install all required Python packages from `requirements.txt`.
+
+```bash
+pip install -r requirements.txt
+```
+
+### Step 3: Initialize Database
+
+Run the database script with the `--reset` flag to create a clean table schema. **This command is destructive and will erase existing data.**
+
+```bash
+python database.py --reset
+```
+
+### Step 4: Run the Indexer
+
+Execute the indexer script. Provide the path to the FITS files and specify the number of workers for parallel processing.
+
+**Example:**
+```bash
+python indexer.py "C:\path\to\your\fits_files" --workers 16
+```
+
+### Step 5: Launch the Web Application
+
+Start the Streamlit web server to launch the GUI. The application will open in a new browser tab.
+
+```bash
+streamlit run app.py
+```
