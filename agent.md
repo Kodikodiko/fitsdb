@@ -21,11 +21,7 @@ The primary objective is to create a comprehensive system for cataloging astrono
 
 The application must connect to a pre-existing PostgreSQL database with the following credentials:
 
--   **Host:** `192.168.1.10`
--   **Port:** `5432`
--   **Database Name:** `st`
--   **User:** `st`
--   **Password:** `st`
+-   **see .env file!**
 
 ### 3.2. Data Model (`database.py`)
 

@@ -34,7 +34,7 @@ python indexer.py ./T_CrB
 ```
 or
 ```bash
-python indexer.py "c:\Users\stefan\Documents\antares\T_CrB"
+python indexer.py "<<Path to your fits files>>\T_CrB"
 ```
 
 The indexer will print its progress and any warnings or errors encountered.
