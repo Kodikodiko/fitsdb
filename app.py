@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 from sqlalchemy import func
 from datetime import datetime, date
 from pathlib import Path
@@ -83,7 +84,9 @@ def initialize_state():
     if 'max_altitude' not in st.session_state: st.session_state.max_altitude = 90
     if 'selected_file' not in st.session_state: st.session_state.selected_file = None
     if 'selected_clients' not in st.session_state:
-        st.session_state.selected_clients = [current_client['mac']] if current_client['mac'] in all_clients_map else []
+        st.session_state.selected_clients = [] # No client selected by default
+    if 'object_click_filter' not in st.session_state: 
+        st.session_state.object_click_filter = None
 
 def clear_all_filters():
     """Resets all filters to their default values."""
@@ -94,7 +97,8 @@ def clear_all_filters():
     st.session_state.min_altitude = 0
     st.session_state.max_altitude = 90
     st.session_state.selected_file = None
-    st.session_state.selected_clients = [current_client['mac']] if current_client['mac'] in all_clients_map else []
+    st.session_state.selected_clients = [] # No client selected by default
+    st.session_state.object_click_filter = None
     # Dataframe selections are cleared automatically on rerun
 
 initialize_state()
@@ -103,6 +107,9 @@ initialize_state()
 
 st.title("🔭 FITS File Catalog Search")
 st.write("Use the filters in the sidebar to search the catalog of indexed FITS files.")
+
+# --- Click-to-filter state ---
+is_object_filtered_by_click = st.session_state.object_click_filter is not None
 
 with st.sidebar:
     st.header("Search Filters")
@@ -115,7 +122,13 @@ with st.sidebar:
     # Get filter options based on selected clients
     object_opts, obs_opts, exptime_opts = get_filter_options(id(db), st.session_state.selected_clients)
 
-    st.multiselect("Object Names", options=object_opts, key='object_names')
+    st.multiselect(
+        "Object Names", 
+        options=object_opts, 
+        key='object_names',
+        disabled=is_object_filtered_by_click,
+        help="Disabled when an object is selected from the results table." if is_object_filtered_by_click else ""
+    )
     st.multiselect("Observatories", options=obs_opts, key='observatories')
     st.multiselect("Exposure Times (s)", options=exptime_opts, key='exptimes', help="Select specific exposure times.")
 
@@ -131,10 +144,14 @@ with st.sidebar:
 # Base query
 query = db.query(FitsFile)
 
+# Handle click-to-filter for object
+if is_object_filtered_by_click:
+    query = query.filter(FitsFile.object_name == st.session_state.object_click_filter)
+
 # Apply filters from sidebar
 if st.session_state.selected_clients:
     query = query.filter(FitsFile.client_mac.in_(st.session_state.selected_clients))
-if st.session_state.object_names:
+if st.session_state.object_names and not is_object_filtered_by_click: # Only apply if not click-filtered
     query = query.filter(FitsFile.object_name.in_(st.session_state.object_names))
 if st.session_state.observatories:
     query = query.filter(FitsFile.observatory.in_(st.session_state.observatories))
@@ -149,18 +166,87 @@ if len(st.session_state.date_range) == 2:
     query = query.filter(FitsFile.date_obs.between(start_datetime, end_datetime))
 
 try:
+    # Display filter state if active
+    if is_object_filtered_by_click:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.info(f"Filtered on object: **{st.session_state.object_click_filter}**")
+        with col2:
+            if st.button("Clear Object Filter", use_container_width=True):
+                st.session_state.object_click_filter = None
+                st.rerun()
+
     df = pd.read_sql(query.statement, query.session.bind)
     st.info(f"Found **{len(df)}** matching files from **{len(st.session_state.selected_clients)}** selected client(s).")
 
     # --- Statistics Section ---
     if not df.empty:
-        with st.expander("Show Statistics for Search Results"):
+        with st.expander("Show Statistics for Search Results", expanded=True):
+            # --- Calculations for all metrics ---
+            total_exposure_seconds = df['exptime'].sum()
+            total_nights = pd.to_datetime(df['date_obs']).dt.date.nunique()
+
+            df_date_aware = df.copy()
+            df_date_aware['date_obs_dt'] = pd.to_datetime(df['date_obs']).dt.tz_localize(None)
+            today_tz_unaware = datetime.now()
+
+            # Define time ranges for top metrics
+            last_full_month_end = today_tz_unaware.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - pd.Timedelta(days=1)
+            last_full_month_start = last_full_month_end.replace(day=1)
+            comparison_month_start = last_full_month_start - pd.DateOffset(years=1)
+            comparison_month_end = last_full_month_end - pd.DateOffset(years=1)
+
+            # Calculate comparison metrics for top row
+            nights_last_month = df_date_aware[(df_date_aware['date_obs_dt'] >= last_full_month_start) & (df_date_aware['date_obs_dt'] <= last_full_month_end)]['date_obs_dt'].dt.date.nunique()
+            nights_comp_month = df_date_aware[(df_date_aware['date_obs_dt'] >= comparison_month_start) & (df_date_aware['date_obs_dt'] <= comparison_month_end)]['date_obs_dt'].dt.date.nunique()
+            delta_nights = nights_last_month - nights_comp_month
+
+            exp_last_month = df_date_aware[(df_date_aware['date_obs_dt'] >= last_full_month_start) & (df_date_aware['date_obs_dt'] <= last_full_month_end)]['exptime'].sum()
+            exp_comp_month = df_date_aware[(df_date_aware['date_obs_dt'] >= comparison_month_start) & (df_date_aware['date_obs_dt'] <= comparison_month_end)]['exptime'].sum()
+            delta_exp = exp_last_month - exp_comp_month
+            
+            # --- Calculations for simple monthly charts ---
+            six_months_ago = (today_tz_unaware.replace(day=1) - pd.DateOffset(months=5)).replace(day=1)
+            df_last_6m = df_date_aware[df_date_aware['date_obs_dt'] >= six_months_ago].copy()
+            df_last_6m['month'] = df_last_6m['date_obs_dt'].dt.to_period('M')
+            
+            nights_by_month = df_last_6m.groupby('month')['date_obs_dt'].apply(lambda x: x.dt.date.nunique())
+            exposure_by_month = (df_last_6m.groupby('month')['exptime'].sum() / 3600).round(1)
+            
+            # Data for table and observatory chart
             distinct_objects_df = df['object_name'].value_counts().reset_index()
             distinct_objects_df.columns = ['Object Name', 'File Count']
-            
-            st.metric("Total Distinct Objects in Results", len(distinct_objects_df))
-            st.write("Objects found in current search:")
-            st.dataframe(distinct_objects_df, use_container_width=True, hide_index=True)
+            observatory_counts = df['observatory'].fillna('Unknown').value_counts()
+
+            # --- UI Layout ---
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric("Total Distinct Objects", len(distinct_objects_df))
+            with col2:
+                st.metric("Total Exposure Time", f"{total_exposure_seconds / 3600:.1f} h")
+            with col3:
+                st.metric("Total Nights", total_nights)
+            with col4:
+                st.metric(f"Nights ({last_full_month_start.strftime('%b %Y')})", value=nights_last_month, delta=f"{delta_nights} vs prior year")
+            with col5:
+                st.metric(f"Exposure ({last_full_month_start.strftime('%b %Y')}) [h]", value=f"{exp_last_month / 3600:.1f}", delta=f"{(delta_exp / 3600):.1f}h vs prior year")
+
+            st.divider()
+
+            chart_col1, chart_col2, chart_col3 = st.columns(3)
+            with chart_col1:
+                st.markdown("###### observing nights")
+                st.bar_chart(nights_by_month, height=200)
+            with chart_col2:
+                st.markdown("###### total exposure time (h)")
+                st.bar_chart(exposure_by_month, height=200)
+            with chart_col3:
+                st.markdown("###### FITS files per observatory")
+                st.bar_chart(observatory_counts, height=200)
+
+            with st.expander("Objects found in current search"):
+                st.dataframe(distinct_objects_df, use_container_width=True)
+
 
     if not df.empty:
         st.header("Search Results")
@@ -169,13 +255,24 @@ try:
         
         df_display = df[display_columns].copy()
         df_display['date_obs'] = pd.to_datetime(df_display['date_obs']).dt.strftime('%d.%m.%Y %H:%M:%S')
-        df_display['exptime'] = df_display['exptime'].map('{:,.2f}s'.format)
+        df_display['exptime'] = df_display['exptime'].map('{:,.1f}s'.format)
         df_display['altitude'] = df_display['altitude'].map('{:.2f}°'.format) if df['altitude'].notna().any() else 'N/A'
         
         st.dataframe(
             df_display, use_container_width=True, hide_index=True,
             on_select="rerun", selection_mode="single-row", key="results_df"
         )
+        
+        # --- Handle row selection for filtering ---
+        selection = st.session_state.get("results_df", {}).get("selection", {})
+        if selection and selection.get("rows"):
+            selected_row_index = selection["rows"][0]
+            selected_object_name = df.iloc[selected_row_index]['object_name']
+            
+            # If the user selected a new object, update the filter and rerun
+            if st.session_state.object_click_filter != selected_object_name:
+                st.session_state.object_click_filter = selected_object_name
+                st.rerun()
 
         # --- File Opener Section ---
         selection = st.session_state.get("results_df", {}).get("selection", {})
