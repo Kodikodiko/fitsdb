@@ -9,6 +9,10 @@
   - **Visualisierungen**: Ein 3-spaltiges Layout zeigt Balkendiagramme für "Anzahl FITS pro Monat", "Gesamtbelichtungszeit pro Monat (h)" und "FITS-Dateien pro Observatorium".
 - **Interaktive Objektfilterung**: Benutzer können auf eine Zeile in der Ergebnistabelle klicken, um die gesamte App nach diesem spezifischen Objekt zu filtern. Eine Schaltfläche "Objektfilter löschen" ermöglicht das einfache Entfernen dieses Filters.
 - **"Anzahl FITS pro Monat"-Chart**: Ein neues Diagramm zur Visualisierung der Anzahl der FITS-Dateien pro Monat wurde hinzugefügt.
+- **Alternative Anwendungsversion (`app2.py`)**: Es wurde eine zweite, eigenständige Anwendungsdatei (`app2.py`) erstellt.
+  - **`app.py`**: Bleibt die Hauptanwendung, die eine aktive Verbindung zu einer PostgreSQL-Datenbank erfordert. Ideal für die Live-Datennutzung und -Indizierung.
+  - **`app2.py`**: Eine Version, die für die einfache Weitergabe und Veröffentlichung konzipiert ist. Sie liest Daten aus einer statischen `fits_data.parquet`-Datei und benötigt keine Datenbankverbindung.
+  - **Datenexport-Skript (`export_data.py`)**: Ein Skript wurde hinzugefügt, um die Daten aus der Datenbank in die `fits_data.parquet`-Datei zu exportieren, die von `app2.py` verwendet wird.
 
 ### 🐛 Bugfixes
 

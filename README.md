@@ -95,10 +95,33 @@ The `W` at the end of the line on Windows indicates that the console is in a leg
 
 ### 2. Run the Web Application
 
-Once indexing is complete, launch the Streamlit web app.
+This project provides two ways to run the web interface, depending on your needs.
 
+#### Option A: Live Database Mode (`app.py`)
+
+This is the primary application that connects directly to the PostgreSQL database. It's ideal for a live environment where you are actively indexing new files and want to see the latest data immediately.
+
+**To run:**
 ```bash
 streamlit run app.py
 ```
 
-This will start a local web server and open the application in your browser, ready for you to explore your newly indexed data.
+#### Option B: Static File Mode (`app2.py`)
+
+This version is designed for easy sharing and deployment (e.g., on Streamlit Community Cloud) without needing a live database connection. It reads all its data from a single `fits_data.parquet` file.
+
+This is a 2-step process to run:
+
+**1. Export Data from Database**
+Run the export script to query your database and create the `fits_data.parquet` file. You must do this every time you want to update the data in the static app.
+```bash
+python export_data.py
+```
+
+**2. Run the Static App**
+Now, run the `app2.py` version of the application.
+```bash
+streamlit run app2.py
+```
+
+This will launch the web app, which will have the same features as the live version but will be reading from the data snapshot you just created.
