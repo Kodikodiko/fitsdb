@@ -205,18 +205,36 @@ try:
             exp_comp_month = df_date_aware[(df_date_aware['date_obs_dt'] >= comparison_month_start) & (df_date_aware['date_obs_dt'] <= comparison_month_end)]['exptime'].sum()
             delta_exp = exp_last_month - exp_comp_month
             
-            # --- Calculations for simple monthly charts ---
-            six_months_ago = (today_tz_unaware.replace(day=1) - pd.DateOffset(months=5)).replace(day=1)
-            df_last_6m = df_date_aware[df_date_aware['date_obs_dt'] >= six_months_ago].copy()
-            df_last_6m['month'] = df_last_6m['date_obs_dt'].dt.to_period('M')
-            
-            nights_by_month = df_last_6m.groupby('month')['date_obs_dt'].apply(lambda x: x.dt.date.nunique())
-            exposure_by_month = (df_last_6m.groupby('month')['exptime'].sum() / 3600).round(1)
             
             # Data for table and observatory chart
             distinct_objects_df = df['object_name'].value_counts().reset_index()
             distinct_objects_df.columns = ['Object Name', 'File Count']
             observatory_counts = df['observatory'].fillna('Unknown').value_counts()
+
+            # --- Monthly Charts Calculation ---
+            if not df_date_aware.empty:
+                df_date_aware['month'] = df_date_aware['date_obs_dt'].dt.to_period('M').dt.to_timestamp()
+                
+                # FITS count per month
+                fits_by_month = df_date_aware.groupby('month').size().reset_index(name='fits_count')
+                
+                # Exposure time per month
+                exposure_by_month = (df_date_aware.groupby('month')['exptime'].sum() / 3600).round(1).reset_index(name='exposure_hours')
+                
+                # Determine the full month range from the filtered data and fill gaps
+                min_month = df_date_aware['month'].min()
+                max_month = df_date_aware['month'].max()
+                all_months_range = pd.date_range(start=min_month, end=max_month, freq='MS')
+                all_months_df = pd.DataFrame({'month': all_months_range})
+                
+                fits_df = pd.merge(all_months_df, fits_by_month, on='month', how='left').fillna(0)
+                fits_df['fits_count'] = fits_df['fits_count'].astype(int)
+                
+                exposure_df = pd.merge(all_months_df, exposure_by_month, on='month', how='left').fillna(0)
+            else:
+                fits_df = pd.DataFrame({'month': [], 'fits_count': []})
+                exposure_df = pd.DataFrame({'month': [], 'exposure_hours': []})
+
 
             # --- UI Layout ---
             col1, col2, col3, col4, col5 = st.columns(5)
@@ -235,14 +253,39 @@ try:
 
             chart_col1, chart_col2, chart_col3 = st.columns(3)
             with chart_col1:
-                st.markdown("###### observing nights")
-                st.bar_chart(nights_by_month, height=200)
+                st.markdown("###### FITS files per month")
+                if not fits_df.empty:
+                    chart = alt.Chart(fits_df).mark_bar().encode(
+                        x=alt.X('month:T', axis=alt.Axis(title=None, format='%b%y')),
+                        y=alt.Y('fits_count:Q', axis=alt.Axis(title='Count'))
+                    ).properties(height=200)
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    st.bar_chart(pd.Series(dtype='float64'), height=200)
+            
             with chart_col2:
-                st.markdown("###### total exposure time (h)")
-                st.bar_chart(exposure_by_month, height=200)
+                st.markdown("###### Total Exposure Time per Month (h)")
+                if not exposure_df.empty:
+                    chart = alt.Chart(exposure_df).mark_bar().encode(
+                        x=alt.X('month:T', axis=alt.Axis(title=None, format='%b%y')),
+                        y=alt.Y('exposure_hours:Q', axis=alt.Axis(title='Hours'))
+                    ).properties(height=200)
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    st.bar_chart(pd.Series(dtype='float64'), height=200)
+
             with chart_col3:
                 st.markdown("###### FITS files per observatory")
-                st.bar_chart(observatory_counts, height=200)
+                if not observatory_counts.empty:
+                    observatory_df = observatory_counts.reset_index()
+                    observatory_df.columns = ['observatory', 'count']
+                    chart = alt.Chart(observatory_df).mark_bar().encode(
+                        x=alt.X('observatory:N', sort='-y', axis=alt.Axis(title=None, labelAngle=0)),
+                        y=alt.Y('count:Q', axis=alt.Axis(title='Count'))
+                    ).properties(height=200)
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    st.bar_chart(pd.Series(dtype='float64'), height=200)
 
             with st.expander("Objects found in current search"):
                 st.dataframe(distinct_objects_df, use_container_width=True)
