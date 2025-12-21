@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.1.0] - 21.12.2025
+
+### ✨ Features
+
+- **Galaktische Koordinaten-Visualisierung**: Ein neues Streudiagramm wurde hinzugefügt, das die Verteilung der Himmelsobjekte in galaktischen Koordinaten darstellt.
+  - **X-Achse**: Galaktische Länge (l) von 180° bis -180°, zentriert auf das galaktische Zentrum (0°).
+  - **Y-Achse**: Galaktische Breite (b) von -90° bis +90°.
+  - **Interaktivität**: Die Punkte können nach Observatorium gefiltert werden. Nicht ausgewählte Observatorien werden ausgeblendet, um die Analyse zu fokussieren.
+  - **Datenbereinigung**: Objekte mit den Namen "Unknown" oder "flatwizard" werden in dieser Ansicht automatisch herausgefiltert.
+
+### 🐛 Bugfixes
+
+- **Robuste JSON-Header-Verarbeitung**: Ein kritischer Fehler wurde behoben, bei dem die Koordinatenextraktion aus FITS-Headern fehlschlug. Die App kann nun korrekt mit einfach oder doppelt "escaped" JSON-Strings im `header_dump`-Feld umgehen, was den Datenverlust bei der Verarbeitung drastisch reduziert.
+
+### ⚙️ Verbesserungen & Refinements
+
+- **Vereinfachte Benutzeroberfläche**: Die Visualisierungsansicht wurde aufgeräumt. Veraltete und irreführende Diagramme wurden entfernt, um den Fokus auf die wissenschaftlich korrekte galaktische Darstellung zu legen.
+- **Achsen-Konfiguration**: Die Achsen der galaktischen Karte wurden präzise konfiguriert, um eine intuitive und standardkonforme Darstellung zu gewährleisten (invertierte X-Achse, voller Y-Achsen-Bereich).
+- **Punktgröße angepasst**: Die Punktgröße im Diagramm wurde reduziert, um die Lesbarkeit bei großen Datenmengen zu verbessern.
+
 ## [Unreleased] - 19.12.2025
 
 ### ✨ Features

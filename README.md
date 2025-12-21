@@ -20,6 +20,9 @@ FITSDB is a Python-based system designed to solve the problem of managing thousa
     -   Exposure Time (multi-select)
     -   Date Range
     -   Altitude Range
+-   **Data Visualizations**:
+    -   **Galactic Sky Map**: A powerful scatter plot that visualizes the distribution of your observed objects in galactic coordinates (Longitude and Latitude). This view helps map your observations against the plane of the Milky Way and supports interactive filtering by observatory.
+    -   **Statistical Charts**: Get a quick overview of your observation habits with monthly charts for FITS count and total exposure time, plus a summary of observations per observatory.
 -   **Result Statistics**: Get a quick overview of the objects found in your search results with an expandable statistics panel.
 -   **Header Inspector**: View the full FITS header of any file directly in the web UI.
 -   **File Opener**: On Windows, open a FITS file in its default application directly from the search results.
