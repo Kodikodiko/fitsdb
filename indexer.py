@@ -47,17 +47,30 @@ def get_client_info() -> dict:
         }
 
 
-def calculate_altitude(header: fits.Header, location: EarthLocation) -> float | None:
+def extract_and_convert_coords(header: fits.Header) -> tuple[float | None, float | None, SkyCoord | None]:
+    """Extracts RA/DEC from FITS header and converts to decimal degrees."""
+    ra_str = header.get('RA') or header.get('OBJCTRA')
+    dec_str = header.get('DEC') or header.get('OBJCTDEC')
+    try:
+        if ra_str and dec_str:
+            # Ensure values are strings for SkyCoord
+            coords = SkyCoord(str(ra_str), str(dec_str), unit=(u.hourangle, u.deg), frame='icrs')
+            # Explicitly cast to Python floats to prevent numpy type issues with SQLAlchemy
+            return float(coords.ra.deg), float(coords.dec.deg), coords
+    except (ValueError, TypeError, AttributeError) as e:
+        # VERBOSE LOGGING: Print the error and the problematic values
+        tqdm.write(f"Coordinate parse error: {e}. RA: '{ra_str}', DEC: '{dec_str}'")
+        pass
+    return None, None, None
+
+
+def calculate_altitude(header: fits.Header, location: EarthLocation, coords: SkyCoord | None) -> float | None:
     """
     Calculates the altitude of the observed object.
     """
     try:
-        ra_str = header.get('RA') or header.get('OBJCTRA')
-        dec_str = header.get('DEC') or header.get('OBJCTDEC')
-        if ra_str is None or dec_str is None:
+        if coords is None:
             return None
-
-        coords = SkyCoord(ra_str, dec_str, unit=(u.hourangle, u.deg))
         date_obs_str = header.get('DATE-OBS')
         if not date_obs_str:
             return None
@@ -66,9 +79,7 @@ def calculate_altitude(header: fits.Header, location: EarthLocation) -> float | 
         obj_altaz = coords.transform_to(altaz_frame)
         return float(obj_altaz.alt.deg)
     except (ValueError, KeyError, TypeError) as e:
-        # This function can be called from multiple threads, printing directly can jumble output.
-        # In a more complex app, logging to a file would be better. For now, we return None.
-        # print(f"  - Warning: Could not calculate altitude for {header.get('OBJECT', 'Unknown')}. Error: {e}")
+        tqdm.write(f"Altitude calculation error: {e} for object {header.get('OBJECT')}")
         return None
 
 
@@ -79,7 +90,7 @@ def process_fits_file(file_path: Path, client_info: dict, scan_root: str) -> str
     """
     db = SessionLocal()
     try:
-        with fits.open(file_path) as hdul:
+        with fits.open(file_path, 'readonly', memmap=False) as hdul:
             header = hdul[0].header
 
             # --- Extract Metadata ---
@@ -92,25 +103,34 @@ def process_fits_file(file_path: Path, client_info: dict, scan_root: str) -> str
             if date_obs_str:
                 try:
                     date_obs = datetime.fromisoformat(date_obs_str)
-                except ValueError:
-                    # Could not parse date
+                except (ValueError, TypeError):
                     pass
 
-            # --- Calculate Altitude ---
+            # --- Coordinates and Altitude ---
+            ra_deg, dec_deg, coords = extract_and_convert_coords(header)
+            
             site_lat = header.get('SITELAT') or header.get('LATITUDE')
             site_lon = header.get('SITELON') or header.get('LONGITUD')
             location = DEFAULT_LOCATION
             if site_lat and site_lon:
                 try:
-                    location = EarthLocation.from_geodetic(lon=site_lon, lat=site_lat)
+                    location = EarthLocation.from_geodetic(lon=str(site_lon), lat=str(site_lat))
                 except (u.UnitConversionError, ValueError):
-                    pass # Could not parse coords
+                    pass
             
-            altitude = calculate_altitude(header, location)
+            altitude = calculate_altitude(header, location, coords)
 
             # --- Prepare DB record ---
-            header_dump = json.loads(json.dumps({k: str(v) for k, v in header.items()}))
-            
+            # Ensure all values are JSON serializable
+            header_dict = {}
+            for k, v in header.items():
+                if isinstance(v, (str, int, float, bool)) or v is None:
+                    header_dict[k] = v
+                else:
+                    header_dict[k] = repr(v) # Use repr for non-standard types
+
+            header_dump = json.dumps(header_dict)
+
             existing_file = db.query(FitsFile).filter(FitsFile.filepath == filepath_str).first()
 
             if existing_file:
@@ -123,6 +143,8 @@ def process_fits_file(file_path: Path, client_info: dict, scan_root: str) -> str
 
             # Update all fields
             record.object_name = object_name
+            record.ra_deg = ra_deg
+            record.dec_deg = dec_deg
             record.date_obs = date_obs
             record.exptime = exptime
             record.altitude = altitude
@@ -138,7 +160,9 @@ def process_fits_file(file_path: Path, client_info: dict, scan_root: str) -> str
 
     except Exception as e:
         db.rollback()
-        return f"Error processing {file_path.name}: {e}"
+        # VERBOSE LOGGING: Print the main processing error
+        tqdm.write(f"!!! CRITICAL ERROR processing {file_path.name}: {e}")
+        return f"Error processing {file_path.name}"
     finally:
         db.close()
 

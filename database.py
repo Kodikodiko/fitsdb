@@ -34,6 +34,8 @@ class FitsFile(Base):
     filepath = Column(String, unique=True, nullable=False)
     filename = Column(String, nullable=False)
     object_name = Column(String, index=True)
+    ra_deg = Column(Float, nullable=True)
+    dec_deg = Column(Float, nullable=True)
     date_obs = Column(DateTime)
     exptime = Column(Float)
     altitude = Column(Float)

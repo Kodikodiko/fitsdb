@@ -2,6 +2,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 import os
 from dotenv import load_dotenv
+import json
 
 # --- Database Configuration ---
 load_dotenv()
@@ -19,9 +20,9 @@ try:
         # Corrected table name from 'fits_file' to 'fits_files'
         df = pd.read_sql_table('fits_files', connection) 
     
-    # Parquet doesn't support JSONB directly. Convert to string representation.
+    # Parquet doesn't support JSONB directly. Convert to a valid JSON string.
     if 'header_dump' in df.columns:
-        df['header_dump'] = df['header_dump'].astype(str)
+        df['header_dump'] = df['header_dump'].apply(json.dumps)
 
     # Convert any timezone-aware datetime columns to timezone-naive
     # This avoids potential issues when reading the parquet file in different environments

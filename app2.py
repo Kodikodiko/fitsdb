@@ -1,95 +1,78 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-from sqlalchemy import func
 from datetime import datetime, date
 from pathlib import Path
-import socket
-import uuid
 import os
 import sys
 import json
 from astropy.coordinates import SkyCoord
 from astropy.units import deg, hourangle
 
-from database import SessionLocal, FitsFile
-
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="FITS File Search",
+    page_title="FITS File Visualizer",
     page_icon="🔭",
     layout="wide",
 )
 
 # --- Helper Functions & Data Loading ---
 
-@st.cache_resource
-def get_db_session():
-    return SessionLocal()
-
 @st.cache_data
-def get_client_info() -> dict:
+def load_data():
+    """Loads data from the Parquet file and caches it."""
     try:
-        mac_int = uuid.getnode()
-        mac_address = ':'.join(f'{mac_int:012x}'[i:i+2] for i in range(0, 12, 2))
-        return {'hostname': socket.gethostname(), 'mac': mac_address}
-    except Exception:
-        return {'hostname': 'unknown', 'mac': '00:00:00:00:00:00'}
+        # Load data from the specified parquet file
+        df = pd.read_parquet("fits_data.parquet")
+        # Ensure date_obs is a datetime object, coercing errors
+        df['date_obs'] = pd.to_datetime(df['date_obs'], errors='coerce')
+        # Drop rows where date_obs could not be parsed
+        df.dropna(subset=['date_obs'], inplace=True)
+        return df
+    except FileNotFoundError:
+        st.error("Error: 'fits_data.parquet' not found. Make sure the Parquet file is in the same directory as the app.")
+        return pd.DataFrame() # Return empty dataframe on error
+    except Exception as e:
+        st.error(f"An error occurred while loading the Parquet file: {e}")
+        return pd.DataFrame()
 
+# Load the main dataframe
+df_main = load_data()
+
+# --- Early exit if data loading failed ---
+if df_main.empty:
+    st.warning("The dataset is empty. Please check the data source.")
+    st.stop()
+
+# --- Get Filter Options from DataFrame ---
 @st.cache_data
-def get_all_clients(_db_session_id):
-    db = get_db_session()
-    clients = db.query(FitsFile.client_hostname, FitsFile.client_mac).distinct().all()
-    return {mac: hostname for hostname, mac in clients if mac}
+def get_filter_options_from_df(_df):
+    """Gets distinct, sorted lists of filter options from the main DataFrame."""
+    if _df.empty:
+        return [], [], [], date.today(), date.today()
+        
+    object_names = sorted([name for name in _df['object_name'].unique() if name and name not in ['Unknown', 'flatwizard']])
+    observatories = sorted([obs for obs in _df['observatory'].unique() if obs and obs != 'Unknown'])
+    exptimes = sorted([et for et in _df['exptime'].unique() if et is not None])
+    min_date = _df['date_obs'].min().date()
+    max_date = _df['date_obs'].max().date()
+    return object_names, observatories, exptimes, min_date, max_date
 
-db = get_db_session()
-current_client = get_client_info()
-all_clients_map = get_all_clients(id(db))
-if current_client['mac'] not in all_clients_map:
-    all_clients_map[current_client['mac']] = current_client['hostname']
+object_opts, obs_opts, exptime_opts, default_min_date, default_max_date = get_filter_options_from_df(df_main)
 
-@st.cache_data
-def get_date_range(_db_session_id):
-    min_date_db, max_date_db = db.query(func.min(FitsFile.date_obs), func.max(FitsFile.date_obs)).first()
-    return min_date_db or date.today(), max_date_db or date.today()
-
-default_min_date, default_max_date = get_date_range(id(db))
-
-# --- State Management ---
-
-@st.cache_data
-def get_filter_options(_db_session_id, selected_clients_macs):
-    """Queries the DB for distinct, sorted lists of filter options."""
-    db = get_db_session()
-    query = db.query(FitsFile)
-    if selected_clients_macs:
-        query = query.filter(FitsFile.client_mac.in_(selected_clients_macs))
-
-    # Query for distinct, non-null, non-empty values and sort them
-    object_names = sorted([r[0] for r in query.with_entities(FitsFile.object_name).distinct().all() if r[0] and r[0] != 'Unknown'])
-    observatories = sorted([r[0] for r in query.with_entities(FitsFile.observatory).distinct().all() if r[0] and r[0] != 'Unknown'])
-    exptimes = sorted([r[0] for r in query.with_entities(FitsFile.exptime).distinct().all() if r[0] is not None])
-    
-    return object_names, observatories, exptimes
 
 # --- State Management ---
 
 def initialize_state():
     """Initializes session state for filters if they don't exist."""
-    # Multi-select filters
     if 'object_names' not in st.session_state: st.session_state.object_names = []
     if 'observatories' not in st.session_state: st.session_state.observatories = []
     if 'exptimes' not in st.session_state: st.session_state.exptimes = []
-    
-    # Other filters from original app
     if 'date_range' not in st.session_state: st.session_state.date_range = (default_min_date, default_max_date)
     if 'min_altitude' not in st.session_state: st.session_state.min_altitude = 0
     if 'max_altitude' not in st.session_state: st.session_state.max_altitude = 90
     if 'selected_file' not in st.session_state: st.session_state.selected_file = None
-    if 'selected_clients' not in st.session_state:
-        st.session_state.selected_clients = [] # No client selected by default
-    if 'object_click_filter' not in st.session_state: 
-        st.session_state.object_click_filter = None
+    if 'object_click_filter' not in st.session_state: st.session_state.object_click_filter = None
 
 def clear_all_filters():
     """Resets all filters to their default values."""
@@ -100,107 +83,61 @@ def clear_all_filters():
     st.session_state.min_altitude = 0
     st.session_state.max_altitude = 90
     st.session_state.selected_file = None
-    st.session_state.selected_clients = [] # No client selected by default
     st.session_state.object_click_filter = None
-    # Dataframe selections are cleared automatically on rerun
 
 initialize_state()
 
 # --- UI Rendering ---
 
-st.title("🔭 FITS File Catalog Search")
-st.write("Use the filters in the sidebar to search the catalog of indexed FITS files.")
+st.title("🔭 FITS File Catalog Visualizer")
+st.write("This app visualizes FITS header data from a Parquet file. Use the filters to explore the data.")
 
 # --- Click-to-filter state ---
 is_object_filtered_by_click = st.session_state.object_click_filter is not None
 
 with st.sidebar:
     st.header("Search Filters")
-    st.multiselect(
-        "Clients", options=list(all_clients_map.keys()), key='selected_clients',
-        format_func=lambda mac: f"{all_clients_map.get(mac, 'Unknown')} ({mac[-5:]})",
-        help="Select one or more clients. The filters below will update based on your selection."
-    )
-
-    # Get filter options based on selected clients
-    object_opts, obs_opts, exptime_opts = get_filter_options(id(db), st.session_state.selected_clients)
 
     st.multiselect(
-        "Object Names", 
-        options=object_opts, 
+        "Object Names",
+        options=object_opts,
         key='object_names',
         disabled=is_object_filtered_by_click,
-        help="Disabled when an object is selected from the results table." if is_object_filtered_by_click else ""
+        help="Filter by object name. Disabled when an object is selected from the results table." if is_object_filtered_by_click else ""
     )
     st.multiselect("Observatories", options=obs_opts, key='observatories')
-    st.multiselect("Exposure Times (s)", options=exptime_opts, key='exptimes', help="Select specific exposure times.")
-
+    st.multiselect("Exposure Times (s)", options=exptime_opts, key='exptimes')
     st.date_input("Observation Date Range", key='date_range', min_value=default_min_date, max_value=default_max_date)
-    
+
     st.subheader("Altitude Filter")
     st.number_input("Minimum Altitude", key='min_altitude', min_value=0, max_value=90)
     st.number_input("Maximum Altitude", key='max_altitude', min_value=0, max_value=90)
     st.button("Clear All Filters", on_click=clear_all_filters, use_container_width=True)
 
-# --- Main Content ---
 
-# Base query
-query = db.query(FitsFile)
+# --- Main Content: Filtering the DataFrame ---
+
+df = df_main.copy()
 
 # Handle click-to-filter for object
 if is_object_filtered_by_click:
-    query = query.filter(FitsFile.object_name == st.session_state.object_click_filter)
+    df = df[df['object_name'] == st.session_state.object_click_filter]
 
 # Apply filters from sidebar
-if st.session_state.selected_clients:
-    query = query.filter(FitsFile.client_mac.in_(st.session_state.selected_clients))
-if st.session_state.object_names and not is_object_filtered_by_click: # Only apply if not click-filtered
-    query = query.filter(FitsFile.object_name.in_(st.session_state.object_names))
+if st.session_state.object_names and not is_object_filtered_by_click:
+    df = df[df['object_name'].isin(st.session_state.object_names)]
 if st.session_state.observatories:
-    query = query.filter(FitsFile.observatory.in_(st.session_state.observatories))
+    df = df[df['observatory'].isin(st.session_state.observatories)]
 if st.session_state.exptimes:
-    query = query.filter(FitsFile.exptime.in_(st.session_state.exptimes))
+    df = df[df['exptime'].isin(st.session_state.exptimes)]
 if st.session_state.min_altitude > 0 or st.session_state.max_altitude < 90:
-    query = query.filter(FitsFile.altitude.between(st.session_state.min_altitude, st.session_state.max_altitude))
+    df = df[df['altitude'].between(st.session_state.min_altitude, st.session_state.max_altitude)]
 if len(st.session_state.date_range) == 2:
     start_date, end_date = st.session_state.date_range
-    start_datetime = datetime.combine(start_date, datetime.min.time())
-    end_datetime = datetime.combine(end_date, datetime.max.time())
-    query = query.filter(FitsFile.date_obs.between(start_datetime, end_datetime))
+    start_datetime = pd.to_datetime(start_date)
+    end_datetime = pd.to_datetime(end_date) + pd.Timedelta(days=1)
+    df = df[df['date_obs'].between(start_datetime, end_datetime)]
 
-def extract_coords(header_dump):
-    """Extracts RA/DEC from FITS header dump and converts to decimal degrees."""
-    try:
-        header = header_dump
-        # The header_dump from the DB can be a dict, or a JSON string,
-        # sometimes even a double-encoded JSON string.
-        if isinstance(header, str):
-            try:
-                header = json.loads(header)
-            except json.JSONDecodeError:
-                # If it's not valid JSON, we can't parse it.
-                return None, None
-        
-        # If the result of the first load is *still* a string, it was double-encoded.
-        if isinstance(header, str):
-            try:
-                header = json.loads(header)
-            except json.JSONDecodeError:
-                return None, None
-
-        if not isinstance(header, dict):
-            # We must have a dictionary to proceed
-            return None, None
-
-        ra_str = header.get('RA') or header.get('OBJCTRA')
-        dec_str = header.get('DEC') or header.get('OBJCTDEC')
-
-        if ra_str and dec_str:
-            coords = SkyCoord(ra_str, dec_str, unit=(hourangle, deg))
-            return coords.ra.deg, coords.dec.deg
-    except (ValueError, TypeError): # Catch other potential errors
-        pass
-    return None, None
 
 try:
     # Display filter state if active
@@ -213,12 +150,12 @@ try:
                 st.session_state.object_click_filter = None
                 st.rerun()
 
-    df = pd.read_sql(query.statement, query.session.bind)
-    st.info(f"Found **{len(df)}** matching files from **{len(st.session_state.selected_clients)}** selected client(s).")
+    st.info(f"Found **{len(df)}** matching files from your search criteria.")
     
-    # Extract coordinates for the sky plot
+    # Create a DataFrame for the sky plot from the filtered results
     if not df.empty:
-        df[['ra_deg', 'dec_deg']] = df['header_dump'].apply(extract_coords).apply(pd.Series)
+        # The new columns ra_deg and dec_deg are already loaded.
+        # We just need to drop rows where the coordinates are missing.
         df_coords = df.dropna(subset=['ra_deg', 'dec_deg']).copy()
 
     # --- Statistics Section ---
@@ -226,27 +163,7 @@ try:
         with st.expander("Show Statistics for Search Results", expanded=True):
             # --- Calculations for all metrics ---
             total_exposure_seconds = df['exptime'].sum()
-            total_nights = pd.to_datetime(df['date_obs']).dt.date.nunique()
-
-            df_date_aware = df.copy()
-            df_date_aware['date_obs_dt'] = pd.to_datetime(df['date_obs']).dt.tz_localize(None)
-            today_tz_unaware = datetime.now()
-
-            # Define time ranges for top metrics
-            last_full_month_end = today_tz_unaware.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - pd.Timedelta(days=1)
-            last_full_month_start = last_full_month_end.replace(day=1)
-            comparison_month_start = last_full_month_start - pd.DateOffset(years=1)
-            comparison_month_end = last_full_month_end - pd.DateOffset(years=1)
-
-            # Calculate comparison metrics for top row
-            nights_last_month = df_date_aware[(df_date_aware['date_obs_dt'] >= last_full_month_start) & (df_date_aware['date_obs_dt'] <= last_full_month_end)]['date_obs_dt'].dt.date.nunique()
-            nights_comp_month = df_date_aware[(df_date_aware['date_obs_dt'] >= comparison_month_start) & (df_date_aware['date_obs_dt'] <= comparison_month_end)]['date_obs_dt'].dt.date.nunique()
-            delta_nights = nights_last_month - nights_comp_month
-
-            exp_last_month = df_date_aware[(df_date_aware['date_obs_dt'] >= last_full_month_start) & (df_date_aware['date_obs_dt'] <= last_full_month_end)]['exptime'].sum()
-            exp_comp_month = df_date_aware[(df_date_aware['date_obs_dt'] >= comparison_month_start) & (df_date_aware['date_obs_dt'] <= comparison_month_end)]['exptime'].sum()
-            delta_exp = exp_last_month - exp_comp_month
-            
+            total_nights = df['date_obs'].dt.date.nunique()
             
             # Data for table and observatory chart
             distinct_objects_df = df['object_name'].value_counts().reset_index()
@@ -254,18 +171,18 @@ try:
             observatory_counts = df['observatory'].fillna('Unknown').value_counts()
 
             # --- Monthly Charts Calculation ---
+            df_date_aware = df.copy()
+            df_date_aware['month'] = df_date_aware['date_obs'].dt.to_period('M').dt.to_timestamp()
+            
+            # FITS count per month
+            fits_by_month = df_date_aware.groupby('month').size().reset_index(name='fits_count')
+            
+            # Exposure time per month
+            exposure_by_month = (df_date_aware.groupby('month')['exptime'].sum() / 3600).round(1).reset_index(name='exposure_hours')
+            
+            # Determine the full month range from the filtered data and fill gaps
             if not df_date_aware.empty:
-                df_date_aware['month'] = df_date_aware['date_obs_dt'].dt.to_period('M').dt.to_timestamp()
-                
-                # FITS count per month
-                fits_by_month = df_date_aware.groupby('month').size().reset_index(name='fits_count')
-                
-                # Exposure time per month
-                exposure_by_month = (df_date_aware.groupby('month')['exptime'].sum() / 3600).round(1).reset_index(name='exposure_hours')
-                
-                # Determine the full month range from the filtered data and fill gaps
-                min_month = df_date_aware['month'].min()
-                max_month = df_date_aware['month'].max()
+                min_month, max_month = df_date_aware['month'].min(), df_date_aware['month'].max()
                 all_months_range = pd.date_range(start=min_month, end=max_month, freq='MS')
                 all_months_df = pd.DataFrame({'month': all_months_range})
                 
@@ -277,19 +194,14 @@ try:
                 fits_df = pd.DataFrame({'month': [], 'fits_count': []})
                 exposure_df = pd.DataFrame({'month': [], 'exposure_hours': []})
 
-
-            # --- UI Layout ---
-            col1, col2, col3, col4, col5 = st.columns(5)
+            # --- UI Layout for Stats ---
+            col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Distinct Objects", len(distinct_objects_df))
             with col2:
                 st.metric("Total Exposure Time", f"{total_exposure_seconds / 3600:.1f} h")
             with col3:
                 st.metric("Total Nights", total_nights)
-            with col4:
-                st.metric(f"Nights ({last_full_month_start.strftime('%b %Y')})", value=nights_last_month, delta=f"{delta_nights} vs prior year")
-            with col5:
-                st.metric(f"Exposure ({last_full_month_start.strftime('%b %Y')}) [h]", value=f"{exp_last_month / 3600:.1f}", delta=f"{(delta_exp / 3600):.1f}h vs prior year")
 
             st.divider()
 
@@ -298,23 +210,23 @@ try:
                 st.markdown("###### FITS files per month")
                 if not fits_df.empty:
                     chart = alt.Chart(fits_df).mark_bar().encode(
-                        x=alt.X('month:T', axis=alt.Axis(title=None, format='%b%y')),
+                        x=alt.X('month:T', axis=alt.Axis(title=None, format='%b %Y')),
                         y=alt.Y('fits_count:Q', axis=alt.Axis(title='Count'))
                     ).properties(height=200)
                     st.altair_chart(chart, use_container_width=True)
                 else:
-                    st.bar_chart(pd.Series(dtype='float64'), height=200)
+                    st.caption("No data for this period.")
             
             with chart_col2:
                 st.markdown("###### Total Exposure Time per Month (h)")
                 if not exposure_df.empty:
                     chart = alt.Chart(exposure_df).mark_bar().encode(
-                        x=alt.X('month:T', axis=alt.Axis(title=None, format='%b%y')),
+                        x=alt.X('month:T', axis=alt.Axis(title=None, format='%b %Y')),
                         y=alt.Y('exposure_hours:Q', axis=alt.Axis(title='Hours'))
                     ).properties(height=200)
                     st.altair_chart(chart, use_container_width=True)
                 else:
-                    st.bar_chart(pd.Series(dtype='float64'), height=200)
+                    st.caption("No data for this period.")
 
             with chart_col3:
                 st.markdown("###### FITS files per observatory")
@@ -327,7 +239,7 @@ try:
                     ).properties(height=200)
                     st.altair_chart(chart, use_container_width=True)
                 else:
-                    st.bar_chart(pd.Series(dtype='float64'), height=200)
+                    st.caption("No observatory data.")
 
             st.divider()
 
@@ -337,58 +249,53 @@ try:
                 # --- Coordinate Transformation ---
                 def get_galactic_coords(row):
                     try:
-                        # Create SkyCoord for a single point
                         coord = SkyCoord(ra=row['ra_deg']*deg, dec=row['dec_deg']*deg, frame='icrs')
                         return coord.galactic.l.deg, coord.galactic.b.deg
                     except Exception:
-                        # Return None if any single coordinate fails to transform
                         return None, None
                 
                 df_coords[['galactic_l', 'galactic_b']] = df_coords.apply(get_galactic_coords, axis=1, result_type='expand')
-                
-                # Drop rows where galactic coordinates could not be computed
                 df_coords.dropna(subset=['galactic_l', 'galactic_b'], inplace=True)
 
-                legend_selection = alt.selection_multi(fields=['observatory'], bind='legend')
+                if not df_coords.empty:
+                    legend_selection = alt.selection_multi(fields=['observatory'], bind='legend')
 
-                # Filter out specific object names for this chart
-                df_filtered_chart = df_coords[
-                    ~df_coords['object_name'].isin(['Unknown', 'flatwizard']) &
-                    df_coords['object_name'].notna()
-                ]
+                    df_filtered_chart = df_coords[
+                        ~df_coords['object_name'].isin(['Unknown', 'flatwizard']) &
+                        df_coords['object_name'].notna()
+                    ]
 
-                # Wrap longitude for correct plotting with l=0 in the center
-                df_galactic_chart = df_filtered_chart.copy()
-                df_galactic_chart['l_wrapped'] = (df_galactic_chart['galactic_l'] + 180) % 360 - 180
+                    df_galactic_chart = df_filtered_chart.copy()
+                    df_galactic_chart['l_wrapped'] = (df_galactic_chart['galactic_l'] + 180) % 360 - 180
 
-                mw_chart = alt.Chart(df_galactic_chart).mark_circle(size=10).encode(
-                    x=alt.X('l_wrapped:Q', scale=alt.Scale(domain=[180, -180]), axis=alt.Axis(title='Galactic Longitude (l) [deg]')),
-                    y=alt.Y('galactic_b:Q', scale=alt.Scale(domain=[-90, 90]), axis=alt.Axis(title='Galactic Latitude (b) [deg]')),
-                    color=alt.Color('observatory:N', legend=alt.Legend(title="Observatory")),
-                    opacity=alt.condition(legend_selection, alt.value(0.7), alt.value(0)),
-                    tooltip=['object_name', 'observatory', 'l_wrapped', 'galactic_b', 'date_obs']
-                ).add_selection(
-                    legend_selection
-                ).properties(
-                    height=400
-                ).interactive()
-                
-                st.altair_chart(mw_chart, use_container_width=True)
-
+                    mw_chart = alt.Chart(df_galactic_chart).mark_circle(size=10).encode(
+                        x=alt.X('l_wrapped:Q', scale=alt.Scale(domain=[180, -180]), axis=alt.Axis(title='Galactic Longitude (l) [deg]')),
+                        y=alt.Y('galactic_b:Q', scale=alt.Scale(domain=[-90, 90]), axis=alt.Axis(title='Galactic Latitude (b) [deg]')),
+                        color=alt.Color('observatory:N', legend=alt.Legend(title="Observatory")),
+                        opacity=alt.condition(legend_selection, alt.value(0.7), alt.value(0.1)),
+                        tooltip=['object_name', 'observatory', 'l_wrapped', 'galactic_b', 'date_obs']
+                    ).add_selection(
+                        legend_selection
+                    ).properties(
+                        height=400
+                    ).interactive()
+                    
+                    st.altair_chart(mw_chart, use_container_width=True)
+                else:
+                    st.info("No valid celestial coordinates could be calculated from the filtered data.")
             else:
                 st.info("No valid celestial coordinates found in the current search results to display the sky plot.")
             
             with st.expander("Objects found in current search"):
                 st.dataframe(distinct_objects_df, use_container_width=True)
 
-
+    # --- Data Table and File Inspector ---
     if not df.empty:
         st.header("Search Results")
-        st.write("Click on a row in the table below to select a file.")
-        display_columns = ["filename", "object_name", "date_obs", "exptime", "altitude", "observatory", "client_hostname"]
+        display_columns = ["filename", "object_name", "date_obs", "exptime", "altitude", "observatory"]
         
         df_display = df[display_columns].copy()
-        df_display['date_obs'] = pd.to_datetime(df_display['date_obs']).dt.strftime('%d.%m.%Y %H:%M:%S')
+        df_display['date_obs'] = df_display['date_obs'].dt.strftime('%d.%m.%Y %H:%M:%S')
         df_display['exptime'] = df_display['exptime'].map('{:,.1f}s'.format)
         df_display['altitude'] = df_display['altitude'].map('{:.2f}°'.format) if df['altitude'].notna().any() else 'N/A'
         
@@ -397,69 +304,54 @@ try:
             on_select="rerun", selection_mode="single-row", key="results_df"
         )
         
-        # --- Handle row selection for filtering ---
         selection = st.session_state.get("results_df", {}).get("selection", {})
         if selection and selection.get("rows"):
             selected_row_index = selection["rows"][0]
             selected_object_name = df.iloc[selected_row_index]['object_name']
             
-            # If the user selected a new object, update the filter and rerun
             if st.session_state.object_click_filter != selected_object_name:
                 st.session_state.object_click_filter = selected_object_name
                 st.rerun()
 
-        # --- File Opener Section ---
-        selection = st.session_state.get("results_df", {}).get("selection", {})
-        if selection and selection.get("rows"):
-            selected_row_index = selection["rows"][0]
-            # Use .iloc on the original dataframe `df` to get the real data
-            filepath_to_open = df.iloc[selected_row_index]['filepath']
-            filename_to_open = df.iloc[selected_row_index]['filename']
-            
-            st.divider()
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.subheader(f"Open File: `{filename_to_open}`")
-                st.caption(filepath_to_open)
-            with col2:
-                st.write("") # Spacer
-                if st.button("Ausgewählte Datei öffnen", use_container_width=True):
-                    if sys.platform == "win32":
-                        try:
-                            os.startfile(filepath_to_open)
-                            st.success(f"Sent command to open '{filename_to_open}'.")
-                        except FileNotFoundError:
-                            st.error(f"File not found at path: {filepath_to_open}. Is the drive mounted correctly?")
-                        except Exception as e:
-                            st.error(f"Failed to open file: {e}")
-                    else:
-                        st.warning(f"File opening is only supported on Windows. Your OS: {sys.platform}")
-            st.divider()
-
         # --- Header Inspector ---
         st.header("FITS Header Inspector")
+        # Use the filtered dataframe `df` for file selection
         file_options = df['filepath'].tolist()
-        # Ensure the selected file is valid, otherwise reset it
-        if st.session_state.selected_file not in file_options:
-            st.session_state.selected_file = None
+        
+        # Check if a row is selected from the results dataframe
+        selection = st.session_state.get("results_df", {}).get("selection", {})
+        selected_filepath = None
+        if selection and selection.get("rows"):
+            selected_row_index = selection["rows"][0]
+            selected_filepath = df.iloc[selected_row_index]['filepath']
+            # Automatically set the selectbox to the clicked file
+            if st.session_state.selected_file != selected_filepath:
+                st.session_state.selected_file = selected_filepath
 
         st.selectbox(
-            "Or select a file here to view its header:",
+            "Select a file to view its header:",
             options=file_options,
             key='selected_file',
             format_func=lambda x: Path(x).name if x else "...",
-            index=None # Set default to empty
+            index=file_options.index(st.session_state.selected_file) if st.session_state.selected_file in file_options else 0
         )
         
         if st.session_state.selected_file:
-            header_data = df[df['filepath'] == st.session_state.selected_file]['header_dump'].iloc[0]
-            st.json(header_data)
+            header_data_str = df[df['filepath'] == st.session_state.selected_file]['header_dump'].iloc[0]
+            try:
+                # Try to parse the string into a dictionary for nice display
+                header_data = json.loads(header_data_str)
+                st.json(header_data, expanded=False)
+            except (json.JSONDecodeError, TypeError):
+                # If it fails, just show the raw string
+                st.text(header_data_str)
         else:
-            st.write("Select a file from the list above to see its header.")
+            st.info("Select a file to see its header.")
             
     else:
         st.session_state.selected_file = None
+        st.warning("No files match the current filter criteria.")
 
 except Exception as e:
-    st.error(f"An error occurred: {e}")
+    st.error("An unexpected error occurred. See details below.")
     st.exception(e)
