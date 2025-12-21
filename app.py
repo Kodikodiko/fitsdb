@@ -8,6 +8,9 @@ import socket
 import uuid
 import os
 import sys
+import json
+from astropy.coordinates import SkyCoord
+from astropy.units import deg, hourangle
 
 from database import SessionLocal, FitsFile
 
@@ -165,6 +168,40 @@ if len(st.session_state.date_range) == 2:
     end_datetime = datetime.combine(end_date, datetime.max.time())
     query = query.filter(FitsFile.date_obs.between(start_datetime, end_datetime))
 
+def extract_coords(header_dump):
+    """Extracts RA/DEC from FITS header dump and converts to decimal degrees."""
+    try:
+        header = header_dump
+        # The header_dump from the DB can be a dict, or a JSON string,
+        # sometimes even a double-encoded JSON string.
+        if isinstance(header, str):
+            try:
+                header = json.loads(header)
+            except json.JSONDecodeError:
+                # If it's not valid JSON, we can't parse it.
+                return None, None
+        
+        # If the result of the first load is *still* a string, it was double-encoded.
+        if isinstance(header, str):
+            try:
+                header = json.loads(header)
+            except json.JSONDecodeError:
+                return None, None
+
+        if not isinstance(header, dict):
+            # We must have a dictionary to proceed
+            return None, None
+
+        ra_str = header.get('RA') or header.get('OBJCTRA')
+        dec_str = header.get('DEC') or header.get('OBJCTDEC')
+
+        if ra_str and dec_str:
+            coords = SkyCoord(ra_str, dec_str, unit=(hourangle, deg))
+            return coords.ra.deg, coords.dec.deg
+    except (ValueError, TypeError): # Catch other potential errors
+        pass
+    return None, None
+
 try:
     # Display filter state if active
     if is_object_filtered_by_click:
@@ -178,6 +215,11 @@ try:
 
     df = pd.read_sql(query.statement, query.session.bind)
     st.info(f"Found **{len(df)}** matching files from **{len(st.session_state.selected_clients)}** selected client(s).")
+    
+    # Extract coordinates for the sky plot
+    if not df.empty:
+        df[['ra_deg', 'dec_deg']] = df['header_dump'].apply(extract_coords).apply(pd.Series)
+        df_coords = df.dropna(subset=['ra_deg', 'dec_deg']).copy()
 
     # --- Statistics Section ---
     if not df.empty:
@@ -287,6 +329,55 @@ try:
                 else:
                     st.bar_chart(pd.Series(dtype='float64'), height=200)
 
+            st.divider()
+
+            # --- Celestial Coordinates Scatter Plot ---
+            st.markdown("###### Milky Way Structure (Galactic Coordinates)")
+            if 'df_coords' in locals() and not df_coords.empty:
+                # --- Coordinate Transformation ---
+                def get_galactic_coords(row):
+                    try:
+                        # Create SkyCoord for a single point
+                        coord = SkyCoord(ra=row['ra_deg']*deg, dec=row['dec_deg']*deg, frame='icrs')
+                        return coord.galactic.l.deg, coord.galactic.b.deg
+                    except Exception:
+                        # Return None if any single coordinate fails to transform
+                        return None, None
+                
+                df_coords[['galactic_l', 'galactic_b']] = df_coords.apply(get_galactic_coords, axis=1, result_type='expand')
+                
+                # Drop rows where galactic coordinates could not be computed
+                df_coords.dropna(subset=['galactic_l', 'galactic_b'], inplace=True)
+
+                legend_selection = alt.selection_multi(fields=['observatory'], bind='legend')
+
+                # Filter out specific object names for this chart
+                df_filtered_chart = df_coords[
+                    ~df_coords['object_name'].isin(['Unknown', 'flatwizard']) &
+                    df_coords['object_name'].notna()
+                ]
+
+                # Wrap longitude for correct plotting with l=0 in the center
+                df_galactic_chart = df_filtered_chart.copy()
+                df_galactic_chart['l_wrapped'] = (df_galactic_chart['galactic_l'] + 180) % 360 - 180
+
+                mw_chart = alt.Chart(df_galactic_chart).mark_circle(size=10).encode(
+                    x=alt.X('l_wrapped:Q', scale=alt.Scale(domain=[180, -180]), axis=alt.Axis(title='Galactic Longitude (l) [deg]')),
+                    y=alt.Y('galactic_b:Q', scale=alt.Scale(domain=[-90, 90]), axis=alt.Axis(title='Galactic Latitude (b) [deg]')),
+                    color=alt.Color('observatory:N', legend=alt.Legend(title="Observatory")),
+                    opacity=alt.condition(legend_selection, alt.value(0.7), alt.value(0)),
+                    tooltip=['object_name', 'observatory', 'l_wrapped', 'galactic_b', 'date_obs']
+                ).add_selection(
+                    legend_selection
+                ).properties(
+                    height=400
+                ).interactive()
+                
+                st.altair_chart(mw_chart, use_container_width=True)
+
+            else:
+                st.info("No valid celestial coordinates found in the current search results to display the sky plot.")
+            
             with st.expander("Objects found in current search"):
                 st.dataframe(distinct_objects_df, use_container_width=True)
 

@@ -29,7 +29,7 @@ try:
         df[col] = df[col].dt.tz_localize(None)
         
     # Export the dataframe to a parquet file
-    df.to_parquet('fits_data.parquet', index=False)
+    df.to_parquet('fits_data.parquet', index=False, version='1.0')
     
     print(f"Successfully exported {len(df)} rows to fits_data.parquet")
     print("You can now modify 'app.py' to read from this file instead of the database.")
